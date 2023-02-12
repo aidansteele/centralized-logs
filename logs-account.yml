@@ -1,0 +1,121 @@
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+
+Parameters:
+  OrganizationId:
+    Type: String
+  FirehoseArn:
+    Type: String
+  SubscriberRoleNamePrefix:
+    Type: String
+    Default: CentralizedLogsSubscriber
+  LogPusherRoleNamePrefix:
+    Type: String
+    Default: CentralizedLogsPusher
+
+Resources:
+  Bus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: CentralizedLogs
+
+  BusPolicy:
+    Type: AWS::Events::EventBusPolicy
+    Properties:
+      EventBusName: !Ref Bus
+      StatementId: AllowOrg
+      Statement:
+        Effect: Allow
+        Principal: "*"
+        Action: events:PutEvents
+        Resource: !GetAtt Bus.Arn
+        Condition:
+          StringEquals:
+            aws:PrincipalOrgID: !Ref OrganizationId
+
+  DestinationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: Firehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: firehose:PutRecord*
+                Resource: !Ref FirehoseArn
+
+  Destination:
+    Type: AWS::Logs::Destination
+    Properties:
+      DestinationName: CentralizedLogs # if you change this name, you also need to change the ARN ~10 lines down
+      RoleArn: !GetAtt DestinationRole.Arn
+      TargetArn: !Ref FirehoseArn
+      DestinationPolicy:
+        Fn::ToJsonString:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: AllowOrg
+              Effect: Allow
+              Principal: "*"
+              Action: logs:PutSubscriptionFilter
+              Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:destination:CentralizedLogs
+              Condition:
+                StringEquals:
+                  aws:PrincipalOrgID: !Ref OrganizationId
+
+  Subscriber:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Type: STANDARD
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Sub arn:aws:iam::*:role/${SubscriberRoleNamePrefix}-${AWS::Region}
+      Events:
+        NewLogGroup:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref Bus
+            Pattern:
+              source: [aws.logs]
+              detail-type: [AWS API Call via CloudTrail]
+              detail:
+                eventName: [CreateLogGroup]
+      Definition:
+        StartAt: Create ARNs
+        States:
+          Create ARNs:
+            Type: Pass
+            Next: Create subscription
+            Parameters:
+              Subscriber.$: !Sub States.Format('arn:aws:iam::{}:role/${SubscriberRoleNamePrefix}-${AWS::Region}', $.account)
+              Pusher.$: !Sub States.Format('arn:aws:iam::{}:role/${LogPusherRoleNamePrefix}-${AWS::Region}', $.account)
+            ResultPath: $.RoleArns
+          Create subscription:
+            Type: Task
+            End: true
+            Resource: arn:aws:states:::aws-sdk:cloudwatchlogs:putSubscriptionFilter
+            Parameters:
+              DestinationArn: !GetAtt Destination.Arn
+              FilterName: CentralizedLogs
+              FilterPattern: '' # blank string matches all logs
+              LogGroupName.$: $.detail.requestParameters.logGroupName
+              RoleArn.$: $.RoleArns.Pusher
+            Credentials:
+              RoleArn.$: $.RoleArns.Subscriber
+
+Outputs:
+  BusArn:
+    Value: !GetAtt Bus.Arn
+  Subscriber:
+    Value: !Ref Subscriber

@@ -1,0 +1,92 @@
+Parameters:
+  CentralBusAccountId:
+    Type: String
+  SubscriberRoleNamePrefix:
+    Type: String
+    Default: CentralizedLogsSubscriber
+  LogPusherRoleNamePrefix:
+    Type: String
+    Default: CentralizedLogsPusher
+
+Resources:
+  NewLogGroupEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source: [aws.logs]
+        detail-type: [AWS API Call via CloudTrail]
+        detail:
+          eventName: [CreateLogGroup]
+      Targets:
+        - Id: central-bus
+          Arn: !Sub arn:aws:events:${AWS::Region}:${CentralBusAccountId}:event-bus/CentralizedLogs
+          RoleArn: !GetAtt NewLogGroupEventRole.Arn
+
+  NewLogGroupEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: events.amazonaws.com
+      Policies:
+        - PolicyName: PutEventsOnCentralBus
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub arn:aws:events:${AWS::Region}:${CentralBusAccountId}:event-bus/CentralizedLogs
+
+  LogPusherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${LogPusherRoleNamePrefix}-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: logs.amazonaws.com
+      Policies:
+        - PolicyName: PutLogEvents
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: "*"
+
+  SubscriberRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${SubscriberRoleNamePrefix}-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              AWS: !Ref CentralBusAccountId
+            Condition:
+              ArnLike:
+                sts:ExternalId: !Sub arn:aws:states:*:${CentralBusAccountId}:stateMachine:*
+      Policies:
+        - PolicyName: Subscriber
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:PutSubscriptionFilter
+                  - logs:DeleteSubscriptionFilter
+                  - logs:DescribeSubscriptionFilters
+                  - logs:DescribeLogGroups
+                Resource: "*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt LogPusherRole.Arn

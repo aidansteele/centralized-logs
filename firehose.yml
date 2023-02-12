@@ -1,0 +1,77 @@
+Parameters:
+  EndpointUrl:
+    Type: String
+    NoEcho: true
+  APIKey:
+    Type: String
+    NoEcho: true
+
+Resources:
+  Bucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  Firehose:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Ref AWS::StackName
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        RoleARN: !GetAtt FirehoseRole.Arn
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 4
+        EndpointConfiguration:
+          Name: logs-saas
+          Url: !Ref EndpointUrl
+          AccessKey: !Ref APIKey
+        RequestConfiguration:
+          ContentEncoding: GZIP
+        RetryOptions:
+          DurationInSeconds: 60
+        S3BackupMode: AllData
+        S3Configuration:
+          BucketARN: !Sub arn:aws:s3:::${Bucket}
+          RoleARN: !GetAtt FirehoseRole.Arn
+          Prefix: logs/!{timestamp:yyyy/MM/dd}/
+          ErrorOutputPrefix: errors/!{firehose:error-output-type}/!{timestamp:yyyy/MM/dd}/
+          BufferingHints:
+            IntervalInSeconds: 60
+            SizeInMBs: 128
+
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: Firehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::${Bucket}
+                  - !Sub arn:aws:s3:::${Bucket}/*
+
+Outputs:
+  FirehoseArn:
+    Value: !GetAtt Firehose.Arn
